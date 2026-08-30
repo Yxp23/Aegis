@@ -10,13 +10,15 @@ import (
 
 	"github.com/Yxp23/aegis/internal/api"
 	"github.com/Yxp23/aegis/internal/config"
+	"github.com/Yxp23/aegis/internal/providers/mock"
 	"github.com/Yxp23/aegis/internal/telemetry"
 )
 
 func main() {
 	cfg := config.Load()
 	logger := telemetry.NewLogger()
-	handler := api.NewHandler()
+	provider := &mock.Provider{}
+	handler := api.NewHandler(provider)
 	logger.Info("server started", "port", cfg.Port)
 
 	server := &http.Server{

@@ -1,0 +1,26 @@
+package mock
+
+import (
+	"context"
+
+	"github.com/Yxp23/aegis/internal/providers"
+)
+
+var _ providers.Provider = (*Provider)(nil)
+
+type Provider struct{}
+
+func (p *Provider) Name() string {
+	return "mock"
+}
+func (p *Provider) Chat(ctx context.Context, req providers.ChatRequest) (providers.ChatResponse, error) {
+	content := "mock response"
+
+	if len(req.Messages) > 0 {
+		content = "mock: " + req.Messages[len(req.Messages)-1].Content
+	}
+
+	return providers.ChatResponse{
+		Content: content,
+	}, nil
+}
