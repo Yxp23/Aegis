@@ -169,3 +169,69 @@ func TestRouterRecordsProviderErrors(t *testing.T) {
 		t.Fatalf("expected 1 error, got %d", stats.Errors)
 	}
 }
+func TestRouterTracksProviderHealth(t *testing.T) {
+	openaiProvider := &failingProvider{providerName: "openai"}
+
+	r := New(openaiProvider)
+
+	for range 3 {
+		_, _ = r.Chat(context.Background(), providers.ChatRequest{
+			Model: "openai/gpt-test",
+		})
+	}
+
+	if r.IsProviderHealthy("openai") {
+		t.Fatal("expected openai to be unhealthy after 3 failures")
+	}
+}
+func TestRouterFallsBackWhenPrimaryFails(t *testing.T) {
+	openaiProvider := &failingProvider{
+		providerName: "openai",
+	}
+
+	anthropicProvider := &testProvider{
+		providerName: "anthropic",
+	}
+
+	r := NewWithPolicy(
+		fixedPolicy{
+			route: Route{
+				Provider: "openai",
+				Model:    "gpt-test",
+				Fallbacks: []Route{
+					{
+						Provider: "anthropic",
+						Model:    "claude-test",
+					},
+				},
+			},
+		},
+		openaiProvider,
+		anthropicProvider,
+	)
+
+	resp, err := r.Chat(
+		context.Background(),
+		providers.ChatRequest{
+			Model: "anything",
+		},
+	)
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+
+	if resp.Content != "anthropic:claude-test" {
+		t.Fatalf("unexpected response: %q", resp.Content)
+	}
+
+	openaiStats := r.ProviderStats("openai")
+	anthropicStats := r.ProviderStats("anthropic")
+
+	if openaiStats.Requests != 1 {
+		t.Fatalf("expected 1 openai request, got %d", openaiStats.Requests)
+	}
+
+	if anthropicStats.Requests != 1 {
+		t.Fatalf("expected 1 anthropic request, got %d", anthropicStats.Requests)
+	}
+}

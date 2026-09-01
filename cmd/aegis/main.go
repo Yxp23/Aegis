@@ -26,10 +26,22 @@ func main() {
 			"fast": {
 				Provider: "openai",
 				Model:    "gpt-5.4-mini",
+				Fallbacks: []router.Route{
+					{
+						Provider: "anthropic",
+						Model:    "claude-sonnet-4-6",
+					},
+				},
 			},
 			"quality": {
 				Provider: "anthropic",
 				Model:    "claude-sonnet-4-6",
+				Fallbacks: []router.Route{
+					{
+						Provider: "openai",
+						Model:    "gpt-5.4-mini",
+					},
+				},
 			},
 		},
 		router.PrefixPolicy{},

@@ -8,8 +8,9 @@ import (
 )
 
 type Route struct {
-	Provider string
-	Model    string
+	Provider  string
+	Model     string
+	Fallbacks []Route
 }
 
 type Policy interface {

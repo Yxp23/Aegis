@@ -13,6 +13,7 @@ type Router struct {
 	providers map[string]providers.Provider
 	policy    Policy
 	stats     *Stats
+	health    *HealthTracker
 }
 
 func New(providerList ...providers.Provider) *Router {
@@ -30,6 +31,7 @@ func NewWithPolicy(policy Policy, providerList ...providers.Provider) *Router {
 		providers: registry,
 		policy:    policy,
 		stats:     NewStats(),
+		health:    NewHealthTracker(3),
 	}
 }
 
@@ -39,12 +41,48 @@ func (r *Router) Name() string {
 	return "router"
 }
 
-func (r *Router) Chat(ctx context.Context, req providers.ChatRequest) (providers.ChatResponse, error) {
+func (r *Router) Chat(
+	ctx context.Context,
+	req providers.ChatRequest,
+) (providers.ChatResponse, error) {
 	route, err := r.policy.Select(req)
 	if err != nil {
 		return providers.ChatResponse{}, err
 	}
 
+	resp, err := r.callProvider(ctx, route, req)
+	if err == nil {
+		return resp, nil
+	}
+
+	lastErr := err
+
+	for _, fallback := range route.Fallbacks {
+		resp, err := r.callProvider(ctx, fallback, req)
+		if err == nil {
+			return resp, nil
+		}
+
+		lastErr = err
+	}
+
+	return providers.ChatResponse{}, fmt.Errorf(
+		"all provider routes failed: %w",
+		lastErr,
+	)
+}
+
+func (r *Router) ProviderStats(provider string) ProviderStats {
+	return r.stats.Snapshot(provider)
+}
+func (r *Router) IsProviderHealthy(provider string) bool {
+	return r.health.IsHealthy(provider)
+}
+func (r *Router) callProvider(
+	ctx context.Context,
+	route Route,
+	req providers.ChatRequest,
+) (providers.ChatResponse, error) {
 	provider, ok := r.providers[route.Provider]
 	if !ok {
 		return providers.ChatResponse{}, fmt.Errorf(
@@ -65,8 +103,7 @@ func (r *Router) Chat(ctx context.Context, req providers.ChatRequest) (providers
 		err,
 	)
 
+	r.health.Record(route.Provider, err)
+
 	return resp, err
-}
-func (r *Router) ProviderStats(provider string) ProviderStats {
-	return r.stats.Snapshot(provider)
 }
