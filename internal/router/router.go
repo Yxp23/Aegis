@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 
+	"time"
+
 	"github.com/Yxp23/aegis/internal/providers"
 )
 
 type Router struct {
 	providers map[string]providers.Provider
 	policy    Policy
+	stats     *Stats
 }
 
 func New(providerList ...providers.Provider) *Router {
@@ -26,6 +29,7 @@ func NewWithPolicy(policy Policy, providerList ...providers.Provider) *Router {
 	return &Router{
 		providers: registry,
 		policy:    policy,
+		stats:     NewStats(),
 	}
 }
 
@@ -51,5 +55,18 @@ func (r *Router) Chat(ctx context.Context, req providers.ChatRequest) (providers
 
 	req.Model = route.Model
 
-	return provider.Chat(ctx, req)
+	start := time.Now()
+
+	resp, err := provider.Chat(ctx, req)
+
+	r.stats.Record(
+		route.Provider,
+		time.Since(start),
+		err,
+	)
+
+	return resp, err
+}
+func (r *Router) ProviderStats(provider string) ProviderStats {
+	return r.stats.Snapshot(provider)
 }
