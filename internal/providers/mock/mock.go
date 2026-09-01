@@ -24,3 +24,31 @@ func (p *Provider) Chat(ctx context.Context, req providers.ChatRequest) (provide
 		Content: content,
 	}, nil
 }
+
+var _ providers.StreamingProvider = (*Provider)(nil)
+
+func (p *Provider) StreamChat(
+	ctx context.Context,
+	req providers.ChatRequest,
+	onChunk providers.StreamHandler,
+) error {
+	chunks := []string{
+		"mock: ",
+		"streaming ",
+		"response",
+	}
+
+	for _, content := range chunks {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		if err := onChunk(providers.StreamChunk{
+			Content: content,
+		}); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}

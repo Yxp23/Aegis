@@ -11,3 +11,9 @@ type ChatRequest struct {
 type ChatResponse struct {
 	Content string
 }
+
+type StreamChunk struct {
+	Content string
+}
+
+type StreamHandler func(StreamChunk) error

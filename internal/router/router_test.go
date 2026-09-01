@@ -7,7 +7,11 @@ import (
 
 	"time"
 
+	"strings"
+
 	"github.com/Yxp23/aegis/internal/providers"
+
+	"github.com/Yxp23/aegis/internal/providers/mock"
 )
 
 type testProvider struct {
@@ -464,5 +468,43 @@ func TestRouterRetriesProviderBeforeFailover(t *testing.T) {
 
 	if stats.Errors != 1 {
 		t.Fatalf("expected 1 failed attempt, got %d", stats.Errors)
+	}
+}
+func TestRouterStreamsProviderResponse(t *testing.T) {
+	mockProvider := &mock.Provider{}
+
+	r := New(mockProvider)
+
+	var chunks []string
+
+	err := r.StreamChat(
+		context.Background(),
+		providers.ChatRequest{
+			Model: "mock/mock-model",
+		},
+		func(chunk providers.StreamChunk) error {
+			chunks = append(chunks, chunk.Content)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("StreamChat returned error: %v", err)
+	}
+
+	got := strings.Join(chunks, "")
+	want := "mock: streaming response"
+
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+
+	stats := r.ProviderStats("mock")
+
+	if stats.Requests != 1 {
+		t.Fatalf("expected 1 streaming request, got %d", stats.Requests)
+	}
+
+	if stats.Errors != 0 {
+		t.Fatalf("expected 0 streaming errors, got %d", stats.Errors)
 	}
 }

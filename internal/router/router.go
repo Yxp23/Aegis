@@ -160,3 +160,59 @@ func (r *Router) callProviderWithRetry(
 
 	return providers.ChatResponse{}, lastErr
 }
+
+var _ providers.StreamingProvider = (*Router)(nil)
+
+func (r *Router) streamProvider(
+	ctx context.Context,
+	route Route,
+	req providers.ChatRequest,
+	onChunk providers.StreamHandler,
+) error {
+	provider, ok := r.providers[route.Provider]
+	if !ok {
+		return fmt.Errorf("unknown provider: %s", route.Provider)
+	}
+
+	streamingProvider, ok := provider.(providers.StreamingProvider)
+	if !ok {
+		return fmt.Errorf("provider %s does not support streaming", route.Provider)
+	}
+
+	req.Model = route.Model
+
+	start := time.Now()
+
+	err := streamingProvider.StreamChat(
+		ctx,
+		req,
+		onChunk,
+	)
+
+	r.stats.Record(
+		route.Provider,
+		time.Since(start),
+		err,
+	)
+
+	r.health.Record(route.Provider, err)
+
+	return err
+}
+func (r *Router) StreamChat(
+	ctx context.Context,
+	req providers.ChatRequest,
+	onChunk providers.StreamHandler,
+) error {
+	route, err := r.policy.Select(req)
+	if err != nil {
+		return err
+	}
+
+	return r.streamProvider(
+		ctx,
+		route,
+		req,
+		onChunk,
+	)
+}

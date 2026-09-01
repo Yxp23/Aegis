@@ -52,3 +52,47 @@ func TestChatHandler(t *testing.T) {
 		t.Fatalf("expected body %q, got %q", expectedBody, rec.Body.String())
 	}
 }
+func TestChatHandlerStreaming(t *testing.T) {
+	provider := &mock.Provider{}
+	handler := NewHandler(provider)
+
+	body := `{
+		"model":"mock/mock-model",
+		"messages":[
+			{"role":"user","content":"hello"}
+		],
+		"stream":true
+	}`
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(body),
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", recorder.Code)
+	}
+
+	got := recorder.Body.String()
+
+	if !strings.Contains(got, `data: {"content":"mock: "}`) {
+		t.Fatalf("missing first stream chunk: %q", got)
+	}
+
+	if !strings.Contains(got, `data: {"content":"streaming "}`) {
+		t.Fatalf("missing second stream chunk: %q", got)
+	}
+
+	if !strings.Contains(got, `data: {"content":"response"}`) {
+		t.Fatalf("missing final stream chunk: %q", got)
+	}
+
+	if !strings.Contains(got, "data: [DONE]") {
+		t.Fatalf("missing stream completion marker: %q", got)
+	}
+}
