@@ -209,10 +209,47 @@ func (r *Router) StreamChat(
 		return err
 	}
 
-	return r.streamProvider(
-		ctx,
-		route,
-		req,
-		onChunk,
-	)
+	routes := append([]Route{route}, route.Fallbacks...)
+
+	var lastErr error
+
+	for _, candidate := range routes {
+		if !r.health.ShouldAllow(candidate.Provider) {
+			continue
+		}
+
+		emitted := false
+
+		err := r.streamProvider(
+			ctx,
+			candidate,
+			req,
+			func(chunk providers.StreamChunk) error {
+				emitted = true
+				return onChunk(chunk)
+			},
+		)
+
+		if err == nil {
+			return nil
+		}
+
+		if emitted {
+			return fmt.Errorf(
+				"stream failed after output started: %w",
+				err,
+			)
+		}
+
+		lastErr = err
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf(
+			"all streaming routes failed before output: %w",
+			lastErr,
+		)
+	}
+
+	return fmt.Errorf("no healthy streaming routes available")
 }

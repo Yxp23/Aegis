@@ -508,3 +508,158 @@ func TestRouterStreamsProviderResponse(t *testing.T) {
 		t.Fatalf("expected 0 streaming errors, got %d", stats.Errors)
 	}
 }
+
+type failingStreamingProvider struct {
+	providerName string
+}
+
+func (p *failingStreamingProvider) Name() string {
+	return p.providerName
+}
+
+func (p *failingStreamingProvider) Chat(
+	ctx context.Context,
+	req providers.ChatRequest,
+) (providers.ChatResponse, error) {
+	return providers.ChatResponse{}, fmt.Errorf("provider failed")
+}
+
+func (p *failingStreamingProvider) StreamChat(
+	ctx context.Context,
+	req providers.ChatRequest,
+	onChunk providers.StreamHandler,
+) error {
+	return fmt.Errorf("stream failed before first chunk")
+}
+
+func TestRouterStreamingFallsBackBeforeFirstChunk(t *testing.T) {
+	primary := &failingStreamingProvider{
+		providerName: "openai",
+	}
+
+	fallback := &mock.Provider{}
+
+	r := NewWithPolicy(
+		fixedPolicy{
+			route: Route{
+				Provider: "openai",
+				Model:    "gpt-test",
+				Fallbacks: []Route{
+					{
+						Provider: "mock",
+						Model:    "mock-model",
+					},
+				},
+			},
+		},
+		primary,
+		fallback,
+	)
+
+	var chunks []string
+
+	err := r.StreamChat(
+		context.Background(),
+		providers.ChatRequest{
+			Model: "anything",
+		},
+		func(chunk providers.StreamChunk) error {
+			chunks = append(chunks, chunk.Content)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("StreamChat returned error: %v", err)
+	}
+
+	got := strings.Join(chunks, "")
+
+	if got != "mock: streaming response" {
+		t.Fatalf("unexpected streamed response: %q", got)
+	}
+}
+
+type partialStreamingProvider struct {
+	providerName string
+}
+
+func (p *partialStreamingProvider) Name() string {
+	return p.providerName
+}
+
+func (p *partialStreamingProvider) Chat(
+	ctx context.Context,
+	req providers.ChatRequest,
+) (providers.ChatResponse, error) {
+	return providers.ChatResponse{}, fmt.Errorf("provider failed")
+}
+
+func (p *partialStreamingProvider) StreamChat(
+	ctx context.Context,
+	req providers.ChatRequest,
+	onChunk providers.StreamHandler,
+) error {
+	if err := onChunk(providers.StreamChunk{
+		Content: "partial output",
+	}); err != nil {
+		return err
+	}
+
+	return fmt.Errorf("stream failed after first chunk")
+}
+func TestRouterDoesNotFailOverAfterStreamingStarts(t *testing.T) {
+	primary := &partialStreamingProvider{
+		providerName: "openai",
+	}
+
+	fallback := &mock.Provider{}
+
+	r := NewWithPolicy(
+		fixedPolicy{
+			route: Route{
+				Provider: "openai",
+				Model:    "gpt-test",
+				Fallbacks: []Route{
+					{
+						Provider: "mock",
+						Model:    "mock-model",
+					},
+				},
+			},
+		},
+		primary,
+		fallback,
+	)
+
+	var chunks []string
+
+	err := r.StreamChat(
+		context.Background(),
+		providers.ChatRequest{
+			Model: "anything",
+		},
+		func(chunk providers.StreamChunk) error {
+			chunks = append(chunks, chunk.Content)
+			return nil
+		},
+	)
+
+	if err == nil {
+		t.Fatal("expected streaming error")
+	}
+
+	got := strings.Join(chunks, "")
+
+	if got != "partial output" {
+		t.Fatalf("unexpected streamed output: %q", got)
+	}
+
+	fallbackStats := r.ProviderStats("mock")
+
+	if fallbackStats.Requests != 0 {
+		t.Fatalf(
+			"expected fallback not to run after streaming started, got %d requests",
+			fallbackStats.Requests,
+		)
+	}
+}

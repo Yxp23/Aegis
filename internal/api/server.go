@@ -74,18 +74,27 @@ func streamChat(
 ) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, `{"error":"streaming unsupported"}`, http.StatusInternalServerError)
+		http.Error(
+			w,
+			`{"error":"streaming unsupported"}`,
+			http.StatusInternalServerError,
+		)
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
+	started := false
 
 	err := provider.StreamChat(
 		r.Context(),
 		req,
 		func(chunk providers.StreamChunk) error {
+			if !started {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Connection", "keep-alive")
+				started = true
+			}
+
 			if _, err := w.Write([]byte("data: ")); err != nil {
 				return err
 			}
@@ -106,6 +115,20 @@ func streamChat(
 	)
 
 	if err != nil {
+		if !started {
+			w.Header().Set("Content-Type", "application/json")
+			http.Error(
+				w,
+				`{"error":"provider stream failed"}`,
+				http.StatusBadGateway,
+			)
+			return
+		}
+
+		w.Write([]byte(
+			"event: error\ndata: {\"error\":\"stream interrupted\"}\n\n",
+		))
+		flusher.Flush()
 		return
 	}
 

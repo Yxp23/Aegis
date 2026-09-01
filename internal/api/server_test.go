@@ -6,6 +6,9 @@ import (
 	"strings"
 	"testing"
 
+	"context"
+	"fmt"
+	"github.com/Yxp23/aegis/internal/providers"
 	"github.com/Yxp23/aegis/internal/providers/mock"
 )
 
@@ -94,5 +97,128 @@ func TestChatHandlerStreaming(t *testing.T) {
 
 	if !strings.Contains(got, "data: [DONE]") {
 		t.Fatalf("missing stream completion marker: %q", got)
+	}
+}
+
+type partialStreamProvider struct{}
+
+func (p *partialStreamProvider) Name() string {
+	return "partial"
+}
+
+func (p *partialStreamProvider) Chat(
+	ctx context.Context,
+	req providers.ChatRequest,
+) (providers.ChatResponse, error) {
+	return providers.ChatResponse{}, fmt.Errorf("not implemented")
+}
+
+func (p *partialStreamProvider) StreamChat(
+	ctx context.Context,
+	req providers.ChatRequest,
+	onChunk providers.StreamHandler,
+) error {
+	if err := onChunk(providers.StreamChunk{
+		Content: "partial",
+	}); err != nil {
+		return err
+	}
+
+	return fmt.Errorf("stream failed")
+}
+func TestStreamingErrorAfterOutputStarted(t *testing.T) {
+	provider := &partialStreamProvider{}
+	handler := NewHandler(provider)
+
+	body := `{
+		"model":"partial/test",
+		"messages":[
+			{"role":"user","content":"hello"}
+		],
+		"stream":true
+	}`
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(body),
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	got := recorder.Body.String()
+
+	if !strings.Contains(got, `data: {"content":"partial"}`) {
+		t.Fatalf("missing streamed chunk: %q", got)
+	}
+
+	if !strings.Contains(got, "event: error") {
+		t.Fatalf("missing stream error event: %q", got)
+	}
+
+	if strings.Contains(got, "data: [DONE]") {
+		t.Fatalf("unexpected completion marker after stream failure: %q", got)
+	}
+}
+
+type failingStreamProvider struct{}
+
+func (p *failingStreamProvider) Name() string {
+	return "failing"
+}
+
+func (p *failingStreamProvider) Chat(
+	ctx context.Context,
+	req providers.ChatRequest,
+) (providers.ChatResponse, error) {
+	return providers.ChatResponse{}, fmt.Errorf("provider failed")
+}
+
+func (p *failingStreamProvider) StreamChat(
+	ctx context.Context,
+	req providers.ChatRequest,
+	onChunk providers.StreamHandler,
+) error {
+	return fmt.Errorf("stream failed before output")
+}
+func TestStreamingErrorBeforeOutputStarted(t *testing.T) {
+	provider := &failingStreamProvider{}
+	handler := NewHandler(provider)
+
+	body := `{
+		"model":"failing/test",
+		"messages":[
+			{"role":"user","content":"hello"}
+		],
+		"stream":true
+	}`
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(body),
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadGateway {
+		t.Fatalf(
+			"expected status 502, got %d",
+			recorder.Code,
+		)
+	}
+
+	if !strings.Contains(
+		recorder.Body.String(),
+		`{"error":"provider stream failed"}`,
+	) {
+		t.Fatalf(
+			"unexpected response: %q",
+			recorder.Body.String(),
+		)
 	}
 }
