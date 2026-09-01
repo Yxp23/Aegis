@@ -153,6 +153,7 @@ func TestRouterRecordsProviderErrors(t *testing.T) {
 	openaiProvider := &failingProvider{providerName: "openai"}
 
 	r := New(openaiProvider)
+	r.maxRetries = 0
 
 	_, err := r.Chat(context.Background(), providers.ChatRequest{
 		Model: "openai/gpt-test",
@@ -211,6 +212,7 @@ func TestRouterFallsBackWhenPrimaryFails(t *testing.T) {
 		openaiProvider,
 		anthropicProvider,
 	)
+	r.maxRetries = 0
 
 	resp, err := r.Chat(
 		context.Background(),
@@ -344,6 +346,7 @@ func TestRouterRetriesProviderAfterCooldown(t *testing.T) {
 		openaiProvider,
 		anthropicProvider,
 	)
+	r.maxRetries = 0
 
 	// Use a short cooldown so the test doesn't wait 30 seconds.
 	r.health = NewHealthTracker(3, 10*time.Millisecond)
@@ -378,5 +381,88 @@ func TestRouterRetriesProviderAfterCooldown(t *testing.T) {
 
 	if !r.IsProviderHealthy("openai") {
 		t.Fatal("expected openai to become healthy again")
+	}
+}
+
+type slowProvider struct {
+	providerName string
+}
+
+func (p *slowProvider) Name() string {
+	return p.providerName
+}
+
+func (p *slowProvider) Chat(
+	ctx context.Context,
+	req providers.ChatRequest,
+) (providers.ChatResponse, error) {
+	select {
+	case <-time.After(100 * time.Millisecond):
+		return providers.ChatResponse{
+			Content: "too slow",
+		}, nil
+
+	case <-ctx.Done():
+		return providers.ChatResponse{}, ctx.Err()
+	}
+}
+func TestRouterTimesOutSlowProvider(t *testing.T) {
+	provider := &slowProvider{
+		providerName: "openai",
+	}
+
+	r := New(provider)
+	r.maxRetries = 0
+	r.providerTimeout = 10 * time.Millisecond
+
+	_, err := r.Chat(
+		context.Background(),
+		providers.ChatRequest{
+			Model: "openai/gpt-test",
+		},
+	)
+
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+
+	stats := r.ProviderStats("openai")
+
+	if stats.Errors != 1 {
+		t.Fatalf("expected 1 provider error, got %d", stats.Errors)
+	}
+}
+func TestRouterRetriesProviderBeforeFailover(t *testing.T) {
+	openaiProvider := &recoveringProvider{
+		providerName:      "openai",
+		failuresRemaining: 1,
+	}
+
+	r := New(openaiProvider)
+	r.maxRetries = 1
+	r.retryBackoff = time.Millisecond
+
+	resp, err := r.Chat(
+		context.Background(),
+		providers.ChatRequest{
+			Model: "openai/gpt-test",
+		},
+	)
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+
+	if resp.Content != "openai:gpt-test" {
+		t.Fatalf("unexpected response: %q", resp.Content)
+	}
+
+	stats := r.ProviderStats("openai")
+
+	if stats.Requests != 2 {
+		t.Fatalf("expected 2 attempts, got %d", stats.Requests)
+	}
+
+	if stats.Errors != 1 {
+		t.Fatalf("expected 1 failed attempt, got %d", stats.Errors)
 	}
 }

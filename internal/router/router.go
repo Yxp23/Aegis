@@ -10,10 +10,13 @@ import (
 )
 
 type Router struct {
-	providers map[string]providers.Provider
-	policy    Policy
-	stats     *Stats
-	health    *HealthTracker
+	providers       map[string]providers.Provider
+	policy          Policy
+	stats           *Stats
+	health          *HealthTracker
+	providerTimeout time.Duration
+	maxRetries      int
+	retryBackoff    time.Duration
 }
 
 func New(providerList ...providers.Provider) *Router {
@@ -28,10 +31,13 @@ func NewWithPolicy(policy Policy, providerList ...providers.Provider) *Router {
 	}
 
 	return &Router{
-		providers: registry,
-		policy:    policy,
-		stats:     NewStats(),
-		health:    NewHealthTracker(3, 30*time.Second),
+		providers:       registry,
+		policy:          policy,
+		stats:           NewStats(),
+		health:          NewHealthTracker(3, 30*time.Second),
+		providerTimeout: 15 * time.Second,
+		maxRetries:      1,
+		retryBackoff:    100 * time.Millisecond,
 	}
 }
 
@@ -59,7 +65,7 @@ func (r *Router) Chat(
 			continue
 		}
 
-		resp, err := r.callProvider(ctx, candidate, req)
+		resp, err := r.callProviderWithRetry(ctx, candidate, req)
 		if err == nil {
 			return resp, nil
 		}
@@ -99,10 +105,15 @@ func (r *Router) callProvider(
 	}
 
 	req.Model = route.Model
+	providerCtx, cancel := context.WithTimeout(
+		ctx,
+		r.providerTimeout,
+	)
+	defer cancel()
 
 	start := time.Now()
 
-	resp, err := provider.Chat(ctx, req)
+	resp, err := provider.Chat(providerCtx, req)
 
 	r.stats.Record(
 		route.Provider,
@@ -113,4 +124,39 @@ func (r *Router) callProvider(
 	r.health.Record(route.Provider, err)
 
 	return resp, err
+}
+
+func (r *Router) callProviderWithRetry(
+	ctx context.Context,
+	route Route,
+	req providers.ChatRequest,
+) (providers.ChatResponse, error) {
+	var lastErr error
+
+	for attempt := 0; attempt <= r.maxRetries; attempt++ {
+		resp, err := r.callProvider(ctx, route, req)
+		if err == nil {
+			return resp, nil
+		}
+
+		lastErr = err
+
+		if ctx.Err() != nil {
+			return providers.ChatResponse{}, ctx.Err()
+		}
+
+		if attempt < r.maxRetries {
+			timer := time.NewTimer(r.retryBackoff)
+
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return providers.ChatResponse{}, ctx.Err()
+
+			case <-timer.C:
+			}
+		}
+	}
+
+	return providers.ChatResponse{}, lastErr
 }
