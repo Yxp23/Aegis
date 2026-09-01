@@ -21,8 +21,22 @@ func main() {
 	logger := telemetry.NewLogger()
 	anthropicProvider := anthropic.New(cfg.AnthropicAPIKey)
 	openaiProvider := openai.New(cfg.OpenAIAPIKey)
+	routingPolicy := router.NewAliasPolicy(
+		map[string]router.Route{
+			"fast": {
+				Provider: "openai",
+				Model:    "gpt-5.4-mini",
+			},
+			"quality": {
+				Provider: "anthropic",
+				Model:    "claude-sonnet-4-6",
+			},
+		},
+		router.PrefixPolicy{},
+	)
 
-	provider := router.New(
+	provider := router.NewWithPolicy(
+		routingPolicy,
 		anthropicProvider,
 		openaiProvider,
 	)
