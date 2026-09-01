@@ -222,3 +222,92 @@ func TestStreamingErrorBeforeOutputStarted(t *testing.T) {
 		)
 	}
 }
+func TestChatHandlerRejectsWrongMethod(t *testing.T) {
+	provider := &mock.Provider{}
+	handler := NewHandler(provider)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/chat/completions",
+		nil,
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf(
+			"expected status 405, got %d",
+			recorder.Code,
+		)
+	}
+}
+func TestChatHandlerRejectsMissingModel(t *testing.T) {
+	provider := &mock.Provider{}
+	handler := NewHandler(provider)
+
+	body := `{
+		"messages":[
+			{"role":"user","content":"hello"}
+		]
+	}`
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(body),
+	)
+
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"expected status 400, got %d",
+			recorder.Code,
+		)
+	}
+}
+func TestChatHandlerRejectsMissingMessages(t *testing.T) {
+	provider := &mock.Provider{}
+	handler := NewHandler(provider)
+
+	body := `{
+		"model":"mock/mock-model"
+	}`
+
+	req := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(body),
+	)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d", recorder.Code)
+	}
+}
+func TestChatHandlerErrorsAreJSON(t *testing.T) {
+	provider := &mock.Provider{}
+	handler := NewHandler(provider)
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/chat/completions",
+		nil,
+	)
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, req)
+
+	if got := recorder.Header().Get("Content-Type"); got != "application/json" {
+		t.Fatalf(
+			"expected application/json content type, got %q",
+			got,
+		)
+	}
+}

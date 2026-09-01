@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/Yxp23/aegis/internal/providers"
+	"log/slog"
 )
 
 type chatRequest struct {
@@ -16,15 +17,45 @@ type chatResponse struct {
 	Content string `json:"content"`
 }
 
-func chatHandler(provider providers.Provider) http.HandlerFunc {
+func chatHandler(
+	provider providers.Provider,
+	logger *slog.Logger,
+) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSONError(
+				w,
+				http.StatusMethodNotAllowed,
+				"method not allowed",
+			)
+			return
+		}
+
 		var req chatRequest
 
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(
+			writeJSONError(
 				w,
-				`{"error":"invalid request body"}`,
 				http.StatusBadRequest,
+				"invalid request body",
+			)
+			return
+		}
+
+		if req.Model == "" {
+			writeJSONError(
+				w,
+				http.StatusBadRequest,
+				"model is required",
+			)
+			return
+		}
+
+		if len(req.Messages) == 0 {
+			writeJSONError(
+				w,
+				http.StatusBadRequest,
+				"at least one message is required",
 			)
 			return
 		}
@@ -37,33 +68,50 @@ func chatHandler(provider providers.Provider) http.HandlerFunc {
 		if req.Stream {
 			streamingProvider, ok := provider.(providers.StreamingProvider)
 			if !ok {
-				http.Error(
+				writeJSONError(
 					w,
-					`{"error":"provider does not support streaming"}`,
 					http.StatusBadGateway,
+					"provider does not support streaming",
 				)
 				return
 			}
 
-			streamChat(w, r, streamingProvider, providerReq)
+			streamChat(
+				w,
+				r,
+				streamingProvider,
+				providerReq,
+				logger,
+			)
 			return
 		}
 
-		resp, err := provider.Chat(r.Context(), providerReq)
+		resp, err := provider.Chat(
+			r.Context(),
+			providerReq,
+		)
 		if err != nil {
-			http.Error(
+			logger.Error(
+				"provider request failed",
+				"error", err,
+				"model", req.Model,
+			)
+
+			writeJSONError(
 				w,
-				`{"error":"provider request failed"}`,
 				http.StatusBadGateway,
+				"provider request failed",
 			)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 
-		json.NewEncoder(w).Encode(chatResponse{
+		if err := json.NewEncoder(w).Encode(chatResponse{
 			Content: resp.Content,
-		})
+		}); err != nil {
+			return
+		}
 	}
 }
 func streamChat(
@@ -71,13 +119,14 @@ func streamChat(
 	r *http.Request,
 	provider providers.StreamingProvider,
 	req providers.ChatRequest,
+	logger *slog.Logger,
 ) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(
+		writeJSONError(
 			w,
-			`{"error":"streaming unsupported"}`,
 			http.StatusInternalServerError,
+			"streaming unsupported",
 		)
 		return
 	}
@@ -115,14 +164,21 @@ func streamChat(
 	)
 
 	if err != nil {
+		logger.Error(
+			"provider stream failed",
+			"error", err,
+			"model", req.Model,
+		)
+
 		if !started {
 			w.Header().Set("Content-Type", "application/json")
-			http.Error(
+			writeJSONError(
 				w,
-				`{"error":"provider stream failed"}`,
 				http.StatusBadGateway,
+				"provider stream failed",
 			)
 			return
+
 		}
 
 		w.Write([]byte(
@@ -142,9 +198,35 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func NewHandler(provider providers.Provider) http.Handler {
+	return NewHandlerWithLogger(
+		provider,
+		slog.Default(),
+	)
+}
+
+func NewHandlerWithLogger(
+	provider providers.Provider,
+	logger *slog.Logger,
+) http.Handler {
 	mux := http.NewServeMux()
+
 	mux.HandleFunc("/health", healthHandler)
-	mux.HandleFunc("/v1/chat/completions", chatHandler(provider))
+	mux.HandleFunc(
+		"/v1/chat/completions",
+		chatHandler(provider, logger),
+	)
 
 	return mux
+}
+func writeJSONError(
+	w http.ResponseWriter,
+	status int,
+	message string,
+) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error": message,
+	})
 }

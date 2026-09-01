@@ -52,7 +52,11 @@ func main() {
 		anthropicProvider,
 		openaiProvider,
 	)
-	handler := api.NewHandler(provider)
+	handler := api.NewHandlerWithLogger(
+		provider,
+		logger,
+	)
+
 	logger.Info("server started", "port", cfg.Port)
 
 	server := &http.Server{
