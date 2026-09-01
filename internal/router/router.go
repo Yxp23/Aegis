@@ -31,7 +31,7 @@ func NewWithPolicy(policy Policy, providerList ...providers.Provider) *Router {
 		providers: registry,
 		policy:    policy,
 		stats:     NewStats(),
-		health:    NewHealthTracker(3),
+		health:    NewHealthTracker(3, 30*time.Second),
 	}
 }
 
@@ -50,15 +50,16 @@ func (r *Router) Chat(
 		return providers.ChatResponse{}, err
 	}
 
-	resp, err := r.callProvider(ctx, route, req)
-	if err == nil {
-		return resp, nil
-	}
+	routes := append([]Route{route}, route.Fallbacks...)
 
-	lastErr := err
+	var lastErr error
 
-	for _, fallback := range route.Fallbacks {
-		resp, err := r.callProvider(ctx, fallback, req)
+	for _, candidate := range routes {
+		if !r.health.ShouldAllow(candidate.Provider) {
+			continue
+		}
+
+		resp, err := r.callProvider(ctx, candidate, req)
 		if err == nil {
 			return resp, nil
 		}
@@ -66,9 +67,15 @@ func (r *Router) Chat(
 		lastErr = err
 	}
 
+	if lastErr != nil {
+		return providers.ChatResponse{}, fmt.Errorf(
+			"all provider routes failed: %w",
+			lastErr,
+		)
+	}
+
 	return providers.ChatResponse{}, fmt.Errorf(
-		"all provider routes failed: %w",
-		lastErr,
+		"no healthy provider routes available",
 	)
 }
 

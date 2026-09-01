@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"testing"
 
+	"time"
+
 	"github.com/Yxp23/aegis/internal/providers"
 )
 
@@ -233,5 +235,148 @@ func TestRouterFallsBackWhenPrimaryFails(t *testing.T) {
 
 	if anthropicStats.Requests != 1 {
 		t.Fatalf("expected 1 anthropic request, got %d", anthropicStats.Requests)
+	}
+}
+func TestRouterSkipsUnhealthyPrimary(t *testing.T) {
+	openaiProvider := &failingProvider{
+		providerName: "openai",
+	}
+
+	anthropicProvider := &testProvider{
+		providerName: "anthropic",
+	}
+
+	r := NewWithPolicy(
+		fixedPolicy{
+			route: Route{
+				Provider: "openai",
+				Model:    "gpt-test",
+				Fallbacks: []Route{
+					{
+						Provider: "anthropic",
+						Model:    "claude-test",
+					},
+				},
+			},
+		},
+		openaiProvider,
+		anthropicProvider,
+	)
+
+	for range 3 {
+		_, err := r.Chat(
+			context.Background(),
+			providers.ChatRequest{Model: "anything"},
+		)
+		if err != nil {
+			t.Fatalf("unexpected failover error: %v", err)
+		}
+	}
+
+	openaiBefore := r.ProviderStats("openai").Requests
+
+	resp, err := r.Chat(
+		context.Background(),
+		providers.ChatRequest{Model: "anything"},
+	)
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+
+	if resp.Content != "anthropic:claude-test" {
+		t.Fatalf("unexpected response: %q", resp.Content)
+	}
+
+	openaiAfter := r.ProviderStats("openai").Requests
+
+	if openaiAfter != openaiBefore {
+		t.Fatalf(
+			"expected unhealthy openai provider to be skipped",
+		)
+	}
+}
+
+type recoveringProvider struct {
+	providerName      string
+	failuresRemaining int
+}
+
+func (p *recoveringProvider) Name() string {
+	return p.providerName
+}
+
+func (p *recoveringProvider) Chat(
+	ctx context.Context,
+	req providers.ChatRequest,
+) (providers.ChatResponse, error) {
+	if p.failuresRemaining > 0 {
+		p.failuresRemaining--
+		return providers.ChatResponse{}, fmt.Errorf("temporary failure")
+	}
+
+	return providers.ChatResponse{
+		Content: p.providerName + ":" + req.Model,
+	}, nil
+}
+func TestRouterRetriesProviderAfterCooldown(t *testing.T) {
+	openaiProvider := &recoveringProvider{
+		providerName:      "openai",
+		failuresRemaining: 3,
+	}
+
+	anthropicProvider := &testProvider{
+		providerName: "anthropic",
+	}
+
+	r := NewWithPolicy(
+		fixedPolicy{
+			route: Route{
+				Provider: "openai",
+				Model:    "gpt-test",
+				Fallbacks: []Route{
+					{
+						Provider: "anthropic",
+						Model:    "claude-test",
+					},
+				},
+			},
+		},
+		openaiProvider,
+		anthropicProvider,
+	)
+
+	// Use a short cooldown so the test doesn't wait 30 seconds.
+	r.health = NewHealthTracker(3, 10*time.Millisecond)
+
+	for range 3 {
+		_, err := r.Chat(
+			context.Background(),
+			providers.ChatRequest{Model: "anything"},
+		)
+		if err != nil {
+			t.Fatalf("unexpected failover error: %v", err)
+		}
+	}
+
+	if r.IsProviderHealthy("openai") {
+		t.Fatal("expected openai to be unhealthy")
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	resp, err := r.Chat(
+		context.Background(),
+		providers.ChatRequest{Model: "anything"},
+	)
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+
+	if resp.Content != "openai:gpt-test" {
+		t.Fatalf("expected recovered openai response, got %q", resp.Content)
+	}
+
+	if !r.IsProviderHealthy("openai") {
+		t.Fatal("expected openai to become healthy again")
 	}
 }
