@@ -65,3 +65,38 @@ func TestRouterRejectsUnknownProvider(t *testing.T) {
 		t.Fatal("expected error for unknown provider")
 	}
 }
+
+type fixedPolicy struct {
+	route Route
+}
+
+func (p fixedPolicy) Select(req providers.ChatRequest) (Route, error) {
+	return p.route, nil
+}
+
+func TestRouterUsesInjectedPolicy(t *testing.T) {
+	openaiProvider := &testProvider{providerName: "openai"}
+	anthropicProvider := &testProvider{providerName: "anthropic"}
+
+	r := NewWithPolicy(
+		fixedPolicy{
+			route: Route{
+				Provider: "anthropic",
+				Model:    "claude-test",
+			},
+		},
+		openaiProvider,
+		anthropicProvider,
+	)
+
+	resp, err := r.Chat(context.Background(), providers.ChatRequest{
+		Model: "anything",
+	})
+	if err != nil {
+		t.Fatalf("Chat returned error: %v", err)
+	}
+
+	if resp.Content != "anthropic:claude-test" {
+		t.Fatalf("unexpected response: %q", resp.Content)
+	}
+}

@@ -3,16 +3,20 @@ package router
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/Yxp23/aegis/internal/providers"
 )
 
 type Router struct {
 	providers map[string]providers.Provider
+	policy    Policy
 }
 
 func New(providerList ...providers.Provider) *Router {
+	return NewWithPolicy(PrefixPolicy{}, providerList...)
+}
+
+func NewWithPolicy(policy Policy, providerList ...providers.Provider) *Router {
 	registry := make(map[string]providers.Provider)
 
 	for _, provider := range providerList {
@@ -21,6 +25,7 @@ func New(providerList ...providers.Provider) *Router {
 
 	return &Router{
 		providers: registry,
+		policy:    policy,
 	}
 }
 
@@ -31,26 +36,20 @@ func (r *Router) Name() string {
 }
 
 func (r *Router) Chat(ctx context.Context, req providers.ChatRequest) (providers.ChatResponse, error) {
-	parts := strings.SplitN(req.Model, "/", 2)
-
-	if len(parts) != 2 {
-		return providers.ChatResponse{}, fmt.Errorf(
-			"model must use provider/model format",
-		)
+	route, err := r.policy.Select(req)
+	if err != nil {
+		return providers.ChatResponse{}, err
 	}
 
-	providerName := parts[0]
-	modelName := parts[1]
-
-	provider, ok := r.providers[providerName]
+	provider, ok := r.providers[route.Provider]
 	if !ok {
 		return providers.ChatResponse{}, fmt.Errorf(
 			"unknown provider: %s",
-			providerName,
+			route.Provider,
 		)
 	}
 
-	req.Model = modelName
+	req.Model = route.Model
 
 	return provider.Chat(ctx, req)
 }
