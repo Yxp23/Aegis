@@ -10,14 +10,22 @@ import (
 
 	"github.com/Yxp23/aegis/internal/api"
 	"github.com/Yxp23/aegis/internal/config"
+	"github.com/Yxp23/aegis/internal/providers/anthropic"
 	"github.com/Yxp23/aegis/internal/providers/openai"
+	"github.com/Yxp23/aegis/internal/router"
 	"github.com/Yxp23/aegis/internal/telemetry"
 )
 
 func main() {
 	cfg := config.Load()
 	logger := telemetry.NewLogger()
-	provider := openai.New(cfg.OpenAIAPIKey)
+	anthropicProvider := anthropic.New(cfg.AnthropicAPIKey)
+	openaiProvider := openai.New(cfg.OpenAIAPIKey)
+
+	provider := router.New(
+		anthropicProvider,
+		openaiProvider,
+	)
 	handler := api.NewHandler(provider)
 	logger.Info("server started", "port", cfg.Port)
 
