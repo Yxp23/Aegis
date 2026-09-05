@@ -1,0 +1,27 @@
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+
+# Go build/test artifacts
+*.test
+*.out
+coverage.out
+
+# Local binaries
+bin/
+dist/
+tmp/
+aegis
+loadtest
+benchserver
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
