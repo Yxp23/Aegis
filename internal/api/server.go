@@ -6,6 +6,7 @@ import (
 
 	"github.com/Yxp23/aegis/internal/providers"
 	"log/slog"
+	"time"
 )
 
 type chatRequest struct {
@@ -215,6 +216,10 @@ func NewHandlerWithLogger(
 		"/v1/chat/completions",
 		chatHandler(provider, logger),
 	)
+	mux.HandleFunc(
+		"/metrics",
+		metricsHandler(provider),
+	)
 
 	return mux
 }
@@ -229,4 +234,70 @@ func writeJSONError(
 	_ = json.NewEncoder(w).Encode(map[string]string{
 		"error": message,
 	})
+}
+
+type metricsSource interface {
+	ProviderNames() []string
+
+	ProviderMetrics(
+		provider string,
+	) (
+		requests int64,
+		errors int64,
+		averageLatency time.Duration,
+		healthy bool,
+	)
+}
+type providerMetric struct {
+	Requests         int64   `json:"requests"`
+	Errors           int64   `json:"errors"`
+	AverageLatencyMS float64 `json:"average_latency_ms"`
+	Healthy          bool    `json:"healthy"`
+}
+
+type metricsResponse struct {
+	Providers map[string]providerMetric `json:"providers"`
+}
+
+func metricsHandler(provider providers.Provider) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSONError(
+				w,
+				http.StatusMethodNotAllowed,
+				"method not allowed",
+			)
+			return
+		}
+
+		source, ok := provider.(metricsSource)
+		if !ok {
+			writeJSONError(
+				w,
+				http.StatusNotImplemented,
+				"metrics unavailable",
+			)
+			return
+		}
+
+		result := metricsResponse{
+			Providers: make(map[string]providerMetric),
+		}
+
+		for _, name := range source.ProviderNames() {
+			requests, errors, averageLatency, healthy :=
+				source.ProviderMetrics(name)
+
+			result.Providers[name] = providerMetric{
+				Requests:         requests,
+				Errors:           errors,
+				AverageLatencyMS: float64(averageLatency) / float64(time.Millisecond),
+				Healthy:          healthy,
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		_ = json.NewEncoder(w).Encode(result)
+	}
 }

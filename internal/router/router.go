@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Yxp23/aegis/internal/providers"
+	"sort"
 )
 
 type Router struct {
@@ -87,6 +88,28 @@ func (r *Router) Chat(
 
 func (r *Router) ProviderStats(provider string) ProviderStats {
 	return r.stats.Snapshot(provider)
+}
+func (r *Router) ProviderNames() []string {
+	names := make([]string, 0, len(r.providers))
+
+	for name := range r.providers {
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+
+	return names
+}
+
+func (r *Router) ProviderMetrics(
+	provider string,
+) (requests int64, errors int64, averageLatency time.Duration, healthy bool) {
+	stats := r.ProviderStats(provider)
+
+	return stats.Requests,
+		stats.Errors,
+		stats.AverageLatency(),
+		r.IsProviderHealthy(provider)
 }
 func (r *Router) IsProviderHealthy(provider string) bool {
 	return r.health.IsHealthy(provider)

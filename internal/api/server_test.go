@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"github.com/Yxp23/aegis/internal/providers"
 	"github.com/Yxp23/aegis/internal/providers/mock"
+	"github.com/Yxp23/aegis/internal/router"
 )
 
 func TestHealthHandler(t *testing.T) {
@@ -309,5 +311,76 @@ func TestChatHandlerErrorsAreJSON(t *testing.T) {
 			"expected application/json content type, got %q",
 			got,
 		)
+	}
+}
+func TestMetricsHandlerReportsProviderStats(t *testing.T) {
+	mockProvider := &mock.Provider{}
+	r := router.New(mockProvider)
+
+	handler := NewHandler(r)
+
+	chatBody := `{
+		"model":"mock/mock-model",
+		"messages":[
+			{"role":"user","content":"hello"}
+		]
+	}`
+
+	chatReq := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(chatBody),
+	)
+
+	chatRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(chatRecorder, chatReq)
+
+	if chatRecorder.Code != http.StatusOK {
+		t.Fatalf(
+			"expected chat status 200, got %d",
+			chatRecorder.Code,
+		)
+	}
+
+	metricsReq := httptest.NewRequest(
+		http.MethodGet,
+		"/metrics",
+		nil,
+	)
+
+	metricsRecorder := httptest.NewRecorder()
+	handler.ServeHTTP(metricsRecorder, metricsReq)
+
+	if metricsRecorder.Code != http.StatusOK {
+		t.Fatalf(
+			"expected metrics status 200, got %d",
+			metricsRecorder.Code,
+		)
+	}
+
+	var result metricsResponse
+
+	if err := json.NewDecoder(metricsRecorder.Body).Decode(&result); err != nil {
+		t.Fatalf("decode metrics response: %v", err)
+	}
+
+	mockMetrics := result.Providers["mock"]
+
+	if mockMetrics.Requests != 1 {
+		t.Fatalf(
+			"expected 1 mock request, got %d",
+			mockMetrics.Requests,
+		)
+	}
+
+	if mockMetrics.Errors != 0 {
+		t.Fatalf(
+			"expected 0 mock errors, got %d",
+			mockMetrics.Errors,
+		)
+	}
+
+	if !mockMetrics.Healthy {
+		t.Fatal("expected mock provider to be healthy")
 	}
 }
