@@ -6,18 +6,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/Yxp23/aegis/internal/api"
-	"github.com/Yxp23/aegis/internal/providers/mock"
-	"github.com/Yxp23/aegis/internal/router"
 )
 
 func percentile(values []time.Duration, p float64) time.Duration {
+	if len(values) == 0 {
+		return 0
+	}
+
 	index := int(float64(len(values)-1) * p)
 	return values[index]
 }
@@ -35,15 +34,27 @@ func main() {
 		"number of concurrent workers",
 	)
 
+	targetURLFlag := flag.String(
+		"url",
+		"http://localhost:9090",
+		"target Aegis server URL",
+	)
+
 	flag.Parse()
 
 	totalRequests := *totalRequestsFlag
 	concurrency := *concurrencyFlag
-	mockProvider := &mock.Provider{}
-	r := router.New(mockProvider)
+	targetURL := *targetURLFlag
 
-	server := httptest.NewServer(api.NewHandler(r))
-	defer server.Close()
+	if totalRequests <= 0 {
+		fmt.Println("requests must be greater than 0")
+		return
+	}
+
+	if concurrency <= 0 {
+		fmt.Println("concurrency must be greater than 0")
+		return
+	}
 
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 
@@ -65,9 +76,13 @@ func main() {
 	}`)
 
 	jobs := make(chan struct{}, totalRequests)
-	latencies := make([]time.Duration, totalRequests)
 
-	var nextIndex atomic.Int64
+	latencies := make(
+		[]time.Duration,
+		totalRequests,
+	)
+
+	var completed atomic.Int64
 	var failures atomic.Int64
 	var wg sync.WaitGroup
 
@@ -84,11 +99,19 @@ func main() {
 
 				req, err := http.NewRequest(
 					http.MethodPost,
-					server.URL+"/v1/chat/completions",
+					targetURL+"/v1/chat/completions",
 					bytes.NewReader(body),
 				)
 				if err != nil {
-					failures.Add(1)
+					count := failures.Add(1)
+
+					if count <= 5 {
+						fmt.Printf(
+							"request creation error: %v\n",
+							err,
+						)
+					}
+
 					continue
 				}
 
@@ -111,17 +134,42 @@ func main() {
 					continue
 				}
 
-				_, copyErr := io.Copy(io.Discard, resp.Body)
+				_, copyErr := io.Copy(
+					io.Discard,
+					resp.Body,
+				)
+
 				resp.Body.Close()
 
-				if copyErr != nil ||
-					resp.StatusCode != http.StatusOK {
-					failures.Add(1)
+				if copyErr != nil {
+					count := failures.Add(1)
+
+					if count <= 5 {
+						fmt.Printf(
+							"response read error: %v\n",
+							copyErr,
+						)
+					}
+
+					continue
+				}
+
+				if resp.StatusCode != http.StatusOK {
+					count := failures.Add(1)
+
+					if count <= 5 {
+						fmt.Printf(
+							"unexpected status: %d\n",
+							resp.StatusCode,
+						)
+					}
+
+					continue
 				}
 
 				elapsed := time.Since(requestStart)
 
-				index := nextIndex.Add(1) - 1
+				index := completed.Add(1) - 1
 				latencies[index] = elapsed
 			}
 		}()
@@ -132,26 +180,72 @@ func main() {
 	}
 
 	close(jobs)
+
 	wg.Wait()
 
 	totalTime := time.Since(start)
 
-	completed := int(nextIndex.Load())
-	latencies = latencies[:completed]
+	completedRequests := int(completed.Load())
+	failedRequests := failures.Load()
 
-	sort.Slice(latencies, func(i, j int) bool {
-		return latencies[i] < latencies[j]
-	})
+	latencies = latencies[:completedRequests]
 
-	requestsPerSecond :=
-		float64(completed) / totalTime.Seconds()
+	sort.Slice(
+		latencies,
+		func(i, j int) bool {
+			return latencies[i] < latencies[j]
+		},
+	)
 
-	fmt.Printf("Requests:     %d\n", completed)
-	fmt.Printf("Concurrency:  %d\n", concurrency)
-	fmt.Printf("Failures:     %d\n", failures.Load())
-	fmt.Printf("Duration:     %s\n", totalTime)
-	fmt.Printf("Throughput:   %.2f req/s\n", requestsPerSecond)
-	fmt.Printf("P50 latency:  %s\n", percentile(latencies, 0.50))
-	fmt.Printf("P95 latency:  %s\n", percentile(latencies, 0.95))
-	fmt.Printf("P99 latency:  %s\n", percentile(latencies, 0.99))
+	requestsPerSecond := 0.0
+
+	if totalTime > 0 {
+		requestsPerSecond =
+			float64(completedRequests) /
+				totalTime.Seconds()
+	}
+
+	fmt.Printf(
+		"Target:       %s\n",
+		targetURL,
+	)
+	fmt.Printf(
+		"Attempted:    %d\n",
+		totalRequests,
+	)
+	fmt.Printf(
+		"Completed:    %d\n",
+		completedRequests,
+	)
+	fmt.Printf(
+		"Concurrency:  %d\n",
+		concurrency,
+	)
+	fmt.Printf(
+		"Failures:     %d\n",
+		failedRequests,
+	)
+	fmt.Printf(
+		"Duration:     %s\n",
+		totalTime,
+	)
+	fmt.Printf(
+		"Throughput:   %.2f req/s\n",
+		requestsPerSecond,
+	)
+
+	if completedRequests > 0 {
+		fmt.Printf(
+			"P50 latency:  %s\n",
+			percentile(latencies, 0.50),
+		)
+		fmt.Printf(
+			"P95 latency:  %s\n",
+			percentile(latencies, 0.95),
+		)
+		fmt.Printf(
+			"P99 latency:  %s\n",
+			percentile(latencies, 0.99),
+		)
+	}
 }
